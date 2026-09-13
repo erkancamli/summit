@@ -51,7 +51,9 @@ The `eth_genesis_hash` field in the Summit genesis config must match the genesis
 ### Prerequisites
 
 - `reth` binary in PATH (see main README for setup)
-- Ports 8545-8548, 3030-3060, 26600-26630 available
+- Ports 8540-8545, 3030-3081 and 26600-26650 available
+
+Reth RPC endpoints count **down** from 8545, as in [running a local network](running-local-network.md#ports). Each node's Summit RPC, admin RPC and P2P ports are `3030 + node * 10`, `3031 + node * 10` and `26600 + node * 10`, so the ranges run past the four genesis nodes: `stake-and-checkpoint`, `stake-and-join-with-outdated-checkpoint` and `sync-from-genesis` add a fifth node, and `observer` runs at slot 5.
 
 ### Building
 
