@@ -249,13 +249,48 @@ impl Read for DynamicEpocher {
         // bounded hint could still over-allocate by `size_of::<Segment>()`. Let
         // the Vec grow as elements are actually decoded; the loop bails on the
         // first `EndOfBuffer`, so only genuine segments are ever allocated.
-        let mut segments = Vec::new();
+        let mut segments: Vec<Segment> = Vec::new();
         for _ in 0..segments_len {
             let start_epoch = Epoch::new(buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?);
             let start_height = Height::new(buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?);
             let length = buf.try_get_u64().map_err(|_| Error::EndOfBuffer)?;
             if length == 0 {
                 return Err(Error::Invalid("DynamicEpocher", "zero-length segment"));
+            }
+            // `bounds` and `containing` both resolve a query by scanning the
+            // segments in reverse, one on `start_epoch` and the other on
+            // `start_height`. They only agree on a schedule shaped the way
+            // `update_length` builds one, so a decoded schedule that could not
+            // have been built is a tampered or corrupt artifact and is rejected
+            // here rather than silently answering the two queries differently.
+            match segments.last() {
+                None => {
+                    if start_epoch.get() != 0 || start_height.get() != 0 {
+                        return Err(Error::Invalid(
+                            "DynamicEpocher",
+                            "first segment must start at epoch 0, height 0",
+                        ));
+                    }
+                }
+                Some(prev) => {
+                    if start_epoch.get() <= prev.start_epoch.get() {
+                        return Err(Error::Invalid(
+                            "DynamicEpocher",
+                            "segment start epochs must be strictly increasing",
+                        ));
+                    }
+                    let expected = start_epoch
+                        .get()
+                        .checked_sub(prev.start_epoch.get())
+                        .and_then(|epochs| epochs.checked_mul(prev.length))
+                        .and_then(|heights| prev.start_height.get().checked_add(heights));
+                    if expected != Some(start_height.get()) {
+                        return Err(Error::Invalid(
+                            "DynamicEpocher",
+                            "segment start height does not continue the preceding segment",
+                        ));
+                    }
+                }
             }
             segments.push(Segment {
                 start_epoch,
@@ -754,5 +789,36 @@ mod tests {
 
         let result = DynamicEpocher::read(&mut buf.as_ref());
         assert!(matches!(result, Err(Error::EndOfBuffer)));
+    }
+    /// A decoded schedule must satisfy the ordering both `bounds` and
+    /// `containing` document themselves as relying on. `read_cfg` is the
+    /// checkpoint / persisted-state import path, so its input is untrusted.
+    #[test]
+    fn read_cfg_rejects_a_schedule_the_builder_could_not_produce() {
+        // segment 0: epoch 0 at height 0, length 100  -> epoch 0 covers 0..=99
+        // segment 1: epoch 5 at height 50             -> claims height 50 is epoch 5
+        // `update_length` can never produce this: it anchors a new segment at
+        // `bounds(target_epoch).0`, which here would be 500, not 50.
+        let mut buf = BytesMut::new();
+        buf.put_u64(5); // current_epoch
+        buf.put_u32(2); // segments_len
+        for (start_epoch, start_height, length) in [(0u64, 0u64, 100u64), (5, 50, 100)] {
+            buf.put_u64(start_epoch);
+            buf.put_u64(start_height);
+            buf.put_u64(length);
+        }
+
+        let decoded = DynamicEpocher::read_cfg(&mut buf.freeze(), &());
+
+        if let Ok(epocher) = &decoded {
+            // Demonstrate why the decode must not have succeeded: the two
+            // query paths disagree about which epoch height 50 belongs to.
+            let containing = epocher.containing(Height::new(50));
+            let epoch_zero = epocher.epoch_bounds(Epoch::new(0));
+            panic!(
+                "decode accepted a self-contradictory schedule: containing(50) = {containing:?} \
+                 while epoch 0 spans {epoch_zero:?}"
+            );
+        }
     }
 }
