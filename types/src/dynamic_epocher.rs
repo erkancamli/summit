@@ -820,5 +820,74 @@ mod tests {
                  while epoch 0 spans {epoch_zero:?}"
             );
         }
+        assert!(
+            matches!(
+                decoded,
+                Err(Error::Invalid(
+                    "DynamicEpocher",
+                    "segment start height does not continue the preceding segment"
+                ))
+            ),
+            "expected the height-continuity rejection, got {decoded:?}"
+        );
+    }
+
+    /// Encodes a schedule and decodes it, so a test can state only the segments
+    /// it cares about as `(start_epoch, start_height, length)`.
+    fn decode_schedule(
+        segments: &[(u64, u64, u64)],
+    ) -> core::result::Result<DynamicEpocher, Error> {
+        let mut buf = BytesMut::new();
+        buf.put_u64(0); // current_epoch
+        buf.put_u32(segments.len() as u32);
+        for &(start_epoch, start_height, length) in segments {
+            buf.put_u64(start_epoch);
+            buf.put_u64(start_height);
+            buf.put_u64(length);
+        }
+        DynamicEpocher::read_cfg(&mut buf.freeze(), &())
+    }
+
+    /// `new` anchors the first segment at epoch 0, height 0, and nothing in the
+    /// builder can move it, so a schedule starting anywhere else was not built by
+    /// this type.
+    #[test]
+    fn read_cfg_rejects_a_first_segment_that_is_not_anchored_at_zero() {
+        for segments in [&[(1u64, 0u64, 100u64)][..], &[(0, 1, 100)][..], &[(3, 300, 100)][..]] {
+            let decoded = decode_schedule(segments);
+            assert!(
+                matches!(
+                    decoded,
+                    Err(Error::Invalid(
+                        "DynamicEpocher",
+                        "first segment must start at epoch 0, height 0"
+                    ))
+                ),
+                "expected {segments:?} to be rejected, got {decoded:?}"
+            );
+        }
+    }
+
+    /// `update_length` either overwrites the last segment or pushes one with a
+    /// strictly greater `start_epoch`, so equal or decreasing start epochs cannot
+    /// come from the builder and would make `bounds`'s reverse scan ambiguous.
+    #[test]
+    fn read_cfg_rejects_non_increasing_segment_start_epochs() {
+        for segments in [
+            &[(0u64, 0u64, 100u64), (0, 100, 100)][..],
+            &[(0, 0, 100), (2, 200, 100), (1, 300, 100)][..],
+        ] {
+            let decoded = decode_schedule(segments);
+            assert!(
+                matches!(
+                    decoded,
+                    Err(Error::Invalid(
+                        "DynamicEpocher",
+                        "segment start epochs must be strictly increasing"
+                    ))
+                ),
+                "expected {segments:?} to be rejected, got {decoded:?}"
+            );
+        }
     }
 }
