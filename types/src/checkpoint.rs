@@ -2248,6 +2248,57 @@ mod tests {
         }
     }
 
+    // The tightening above only narrows *which* accounts the reverse check
+    // binds; the honest case it must keep accepting is the one the forward check
+    // has always allowed: a validator that signed this epoch's headers and then
+    // submitted an exit request before the epoch boundary. It is still in the
+    // accumulated signing set, so the checkpoint must verify — under
+    // `is_current_epoch_signer()` the account is bound and found, and it is the
+    // direction that would break production if the reverse check ever started
+    // rejecting signers it cannot place.
+    #[test]
+    fn test_checkpoint_verifier_accepts_exiting_account_in_the_accumulated_signing_set() {
+        use crate::account::ValidatorStatus;
+
+        // A genesis validator, so it is in the accumulated signing set that
+        // `build_checkpoint_and_header` seeds the epoch-0 participants from.
+        let exiting_key: [u8; 32] = ed25519::PrivateKey::from_seed(0)
+            .public_key()
+            .as_ref()
+            .try_into()
+            .expect("ed25519 public key should be 32 bytes");
+
+        let (genesis, checkpoint, header) = build_checkpoint_and_header(
+            |s| {
+                s.set_latest_height(5);
+                let mut account = s
+                    .get_account(&exiting_key)
+                    .expect("genesis validator should have an account")
+                    .clone();
+                assert_eq!(
+                    account.status,
+                    ValidatorStatus::Active,
+                    "fixture account must start Active for the flip to mean anything"
+                );
+                account.status = ValidatorStatus::SubmittedExitRequest;
+                assert!(
+                    account.status.is_current_epoch_signer(),
+                    "an exiting validator still signs for the current epoch"
+                );
+                s.set_account(exiting_key, account);
+            },
+            6,
+        );
+
+        let result =
+            super::verify_checkpoint_chain(&genesis, std::slice::from_ref(&header), &checkpoint);
+        assert!(
+            result.is_ok(),
+            "a checkpoint whose exiting validator is still in the accumulated signing set must \
+             verify, got {result:?}"
+        );
+    }
+
     // Checkpoint data encodes the state before set_pending_checkpoint runs
     // (nested pending checkpoints are rejected at decode), so a restore has to
     // repopulate the field from the outer checkpoint and re-capture the root
