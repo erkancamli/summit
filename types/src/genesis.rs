@@ -261,6 +261,27 @@ impl Genesis {
             .into());
         }
         ProtocolParam::AllowedTimestampFuture(self.allowed_timestamp_future_ms).validate()?;
+        // The EL genesis hash is this deployment's immutable identity. Every
+        // startup path reads it through `genesis_hash`, which panics unless it
+        // decodes to exactly 32 bytes, so the check belongs here: `send_genesis`
+        // installs any genesis this accepts (its atomic write exists so startup
+        // never crash-loops on an installed file), and `summit genesis digest`
+        // reports it as one a validator will start on.
+        match from_hex(&self.eth_genesis_hash) {
+            Some(bytes) if bytes.len() == 32 => {}
+            Some(bytes) => {
+                return Err(
+                    format!("eth_genesis_hash must be 32 bytes, got {}", bytes.len()).into(),
+                );
+            }
+            None => {
+                return Err(format!(
+                    "invalid eth_genesis_hash: {} is not a hex string",
+                    self.eth_genesis_hash
+                )
+                .into());
+            }
+        }
         self.treasury_address
             .parse::<Address>()
             .map_err(|e| format!("invalid treasury_address: {e}"))?;
@@ -574,6 +595,39 @@ mod tests {
         let mut genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
         genesis.minimum_validator_count = 0;
         assert!(genesis.validate().is_err());
+    }
+
+    /// `genesis_hash` documents that `eth_genesis_hash` is "validated at load
+    /// time", and the `genesis` CLI promises that anything `load_from_file`
+    /// accepts "a validator accepts". A hash that is not 32 bytes of hex must
+    /// therefore be rejected here, not accepted and panicked on at startup.
+    #[test]
+    fn rejects_malformed_eth_genesis_hash() {
+        let base = Genesis::load_from_file("../example_genesis.toml").unwrap();
+
+        for bad in ["", "not-hex", "0xdead", &format!("0x{}", "11".repeat(33))] {
+            let mut genesis = base.clone();
+            genesis.eth_genesis_hash = bad.to_string();
+            assert!(
+                genesis.validate().is_err(),
+                "eth_genesis_hash {bad:?} must be rejected at load"
+            );
+        }
+    }
+
+    /// The complement: a genesis `validate` accepts must have a usable
+    /// `genesis_hash`, which is what every startup path calls.
+    #[test]
+    fn accepts_well_formed_eth_genesis_hash() {
+        let mut genesis = Genesis::load_from_file("../example_genesis.toml").unwrap();
+        genesis.eth_genesis_hash = format!("0x{}", "11".repeat(32));
+        assert!(genesis.validate().is_ok());
+        assert_eq!(genesis.genesis_hash(), [0x11u8; 32]);
+
+        // The unprefixed spelling is equally valid.
+        genesis.eth_genesis_hash = "11".repeat(32);
+        assert!(genesis.validate().is_ok());
+        assert_eq!(genesis.genesis_hash(), [0x11u8; 32]);
     }
 
     #[test]
