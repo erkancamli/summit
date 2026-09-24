@@ -853,7 +853,11 @@ mod tests {
     /// this type.
     #[test]
     fn read_cfg_rejects_a_first_segment_that_is_not_anchored_at_zero() {
-        for segments in [&[(1u64, 0u64, 100u64)][..], &[(0, 1, 100)][..], &[(3, 300, 100)][..]] {
+        for segments in [
+            &[(1u64, 0u64, 100u64)][..],
+            &[(0, 1, 100)][..],
+            &[(3, 300, 100)][..],
+        ] {
             let decoded = decode_schedule(segments);
             assert!(
                 matches!(
